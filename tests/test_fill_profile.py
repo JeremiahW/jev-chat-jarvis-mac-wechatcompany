@@ -37,6 +37,17 @@ class FillProfileTests(unittest.TestCase):
         self.assertIn(WECOM.display_name, result["reason"])
         self.assertIs(result["profile"], WECOM)
 
+    def test_fill_text_visual_path_overwrites_stale_target_profile(self):
+        target = {"window": {}, "box": None, "visual_rect": (0, 100, 600, 200),
+                  "profile": WECHAT}
+        with patch.object(fill, "has_accessibility", return_value=True), \
+             patch.object(fill, "_target_app", return_value=Mock()), \
+             patch("visual_fill.write_text", return_value=(True, "已填入")) as write:
+            ok, reason = fill.fill_text("hello", target=target, profile=WECOM)
+        self.assertTrue(ok)
+        self.assertEqual(reason, "已填入")
+        self.assertIs(write.call_args.args[1].get("profile"), WECOM)
+
     def test_fill_text_resolves_profile_from_target(self):
         target = {"window": {}, "box": None, "visual_rect": (0, 100, 600, 200),
                   "profile": WECOM}

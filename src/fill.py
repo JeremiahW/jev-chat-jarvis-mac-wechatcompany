@@ -304,8 +304,9 @@ def fill_text(text: str, target=None, profile: AppProfile | None = None) -> tupl
         if target is not None and target['box'] is None and target.get('visual_rect'):
             from visual_fill import write_text
             try:
-                if target.get("profile") is None:
-                    target = dict(target, profile=profile)
+                # Always stamp the resolved profile so write_text cannot keep a
+                # stale wechat/wecom identity from an earlier locate.
+                target = {**target, "profile": profile}
                 return write_text(text, target, app)
             except Exception:
                 return False, '输入过程异常，请先检查草稿，勿重复点击'
