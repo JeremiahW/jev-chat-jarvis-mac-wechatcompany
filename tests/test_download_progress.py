@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 from judge import Judge, FallbackJudge, _download_progress
+from perception import PROBE_FAIL
 
 
 class DownloadTests(unittest.TestCase):
@@ -186,7 +187,7 @@ def hud_harness():
         name='Harness', bases=[], keywords=[], body=methods, decorator_list=[])], type_ignores=[]))
     scope = {'PALETTE': {'amber': 'amber', 'muted': 'muted', 'red': 'red'},
             # tick_ 的前台检查在本测试作用域外：None 表示没有支持的 IM 在前台
-            'frontmost_target': lambda: None}
+            'frontmost_target': lambda: None, 'PROBE_FAIL': PROBE_FAIL}
     exec(compile(module, 'hud.py', 'exec'), scope)
     return scope['Harness']
 

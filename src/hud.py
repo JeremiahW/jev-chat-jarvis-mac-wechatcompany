@@ -69,7 +69,7 @@ userconfig.load()   # ~/.config/jev-jarvis/env -> os.environ (Finder apps inheri
 
 from app_profile import AppProfile  # noqa: E402
 from perception import (  # noqa: E402
-    frontmost_target, read_conversation, screen_capture_ok,
+    PROBE_FAIL, frontmost_target, read_conversation, screen_capture_ok,
     request_screen_capture, warm_ocr)
 import judge  # noqa: E402  (model_cached / model_disk_usage: the #38 onboarding + settings)
 from judge import LowMemoryError, ModelNotDownloadedError, make_judge  # noqa: E402
@@ -1325,6 +1325,10 @@ class HudController(NSObject):
         if profile is not None:
             self._next_read_ts = 0
             _log(f"前台切换 · {profile.display_name} 回到前台，强制重新读屏")
+            if old_id is not None:
+                # Still on a supported IM: drop the previous app's replies, keep the panel.
+                self._push("applyWaiting:", "等待消息…")
+                self._push("applyChat:", "")
         else:
             _log(f"前台切换 · {prev_name} 离开前台，隐藏面板并清空旧结果")
             self._push("applyForegroundHidden:", f"{prev_name}不在前台")
@@ -1338,6 +1342,8 @@ class HudController(NSObject):
         # firing while OCR is in flight, so a quick WeChat -> Chrome -> WeChat
         # round trip still advances _foreground_epoch and retires that capture.
         profile = frontmost_target()
+        if profile is PROBE_FAIL:
+            return
         self._set_foreground_state(profile)
         if profile is None:
             return
@@ -1360,6 +1366,9 @@ class HudController(NSObject):
         # activation as a hard display/capture boundary before even checking permissions:
         # a missing screen grant must not keep an error panel floating over other apps.
         profile = frontmost_target()
+        if profile is PROBE_FAIL:
+            self._next_read_ts = time.time() + FAST_TICK
+            return
         self._set_foreground_state(profile)
         if profile is None:
             self._next_read_ts = time.time() + FAST_TICK
@@ -1385,11 +1394,12 @@ class HudController(NSObject):
         # complete leave+return while this worker was busy; in that case even a
         # currently-frontmost WeChat does not make this old snapshot current.
         profile = frontmost_target()
-        self._set_foreground_state(profile)
-        if (profile is None
-                or capture_foreground_epoch != self._foreground_epoch):
-            self._next_read_ts = time.time() + FAST_TICK
-            return
+        if profile is not PROBE_FAIL:
+            self._set_foreground_state(profile)
+            if (profile is None
+                    or capture_foreground_epoch != self._foreground_epoch):
+                self._next_read_ts = time.time() + FAST_TICK
+                return
         if not res["ok"]:
             # Window enumeration/capture can miss one frame while WeChat redraws.
             # Keep the already-current HUD stable for a short grace period, then

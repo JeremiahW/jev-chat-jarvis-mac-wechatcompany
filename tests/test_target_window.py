@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import perception
 from app_profile import WECHAT, WECOM
-from perception import find_target_window, find_wechat_window
+from perception import PROBE_FAIL, find_target_window, find_wechat_window
 
 
 def window(owner, title, w, h, wid=1, pid=1):
@@ -68,11 +68,33 @@ def frontmost_app_is_wechat(name, bundle=""):
         return perception.frontmost_app_is_wechat()
 
 
+def frontmost_from_app(app):
+    """frontmost_target() when NSWorkspace returns ``app`` (may be None)."""
+    appkit = types.ModuleType("AppKit")
+    appkit.NSWorkspace = SimpleNamespace(
+        sharedWorkspace=lambda: _FakeWorkspace(app))
+    with patch.dict(sys.modules, {"AppKit": appkit}):
+        return perception.frontmost_target()
+
+
+def frontmost_wechat_from_app(app):
+    appkit = types.ModuleType("AppKit")
+    appkit.NSWorkspace = SimpleNamespace(
+        sharedWorkspace=lambda: _FakeWorkspace(app))
+    with patch.dict(sys.modules, {"AppKit": appkit}):
+        return perception.frontmost_app_is_wechat()
+
+
 class TargetWindowTests(unittest.TestCase):
     def test_wecom_window_found_for_wecom_profile(self):
         win = find_with(WECOM, [window("企业微信", "企业微信", 1200, 800, wid=7)])
         self.assertIsNotNone(win)
         self.assertEqual(win.wid, 7)
+
+    def test_wecom_window_found_by_wecom_owner(self):
+        win = find_with(WECOM, [window("WeCom", "WeCom", 1200, 800, wid=9)])
+        self.assertIsNotNone(win)
+        self.assertEqual(win.wid, 9)
 
     def test_wechat_profile_ignores_wecom_window(self):
         self.assertIsNone(
@@ -120,6 +142,30 @@ class TargetWindowTests(unittest.TestCase):
     def test_frontmost_app_is_wechat_true_when_wecom_frontmost(self):
         self.assertTrue(frontmost_app_is_wechat("企业微信"))
         self.assertTrue(frontmost_app_is_wechat("WeCom", bundle="com.tencent.WeWorkMac"))
+
+    def test_frontmost_target_probe_fail_when_app_missing(self):
+        self.assertIs(frontmost_from_app(None), PROBE_FAIL)
+
+    def test_frontmost_target_probe_fail_on_workspace_error(self):
+        appkit = types.ModuleType("AppKit")
+        appkit.NSWorkspace = SimpleNamespace(
+            sharedWorkspace=lambda: (_ for _ in ()).throw(RuntimeError("no workspace")))
+        with patch.dict(sys.modules, {"AppKit": appkit}):
+            self.assertIs(perception.frontmost_target(), PROBE_FAIL)
+
+    def test_frontmost_target_none_for_other_app(self):
+        self.assertIsNone(frontmost_target("Google Chrome", bundle="com.google.Chrome"))
+
+    def test_frontmost_app_is_wechat_none_on_probe_fail(self):
+        self.assertIsNone(frontmost_wechat_from_app(None))
+        appkit = types.ModuleType("AppKit")
+        appkit.NSWorkspace = SimpleNamespace(
+            sharedWorkspace=lambda: (_ for _ in ()).throw(RuntimeError("no workspace")))
+        with patch.dict(sys.modules, {"AppKit": appkit}):
+            self.assertIsNone(perception.frontmost_app_is_wechat())
+
+    def test_frontmost_app_is_wechat_false_for_other_app(self):
+        self.assertFalse(frontmost_app_is_wechat("Google Chrome", bundle="com.google.Chrome"))
 
 
 if __name__ == "__main__":

@@ -110,33 +110,47 @@ def request_screen_capture() -> bool:
         return False
 
 
-def frontmost_target() -> AppProfile | None:
+class _ProbeFail:
+    """Sentinel: NSWorkspace could not be queried. HUD must not treat as leave."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "PROBE_FAIL"
+
+
+PROBE_FAIL = _ProbeFail()
+
+
+def frontmost_target() -> AppProfile | None | _ProbeFail:
+    """Frontmost supported IM, or None if another app is frontmost.
+
+    Returns PROBE_FAIL when the workspace probe itself fails (no app object
+    or NSWorkspace error). Callers must check ``result is PROBE_FAIL`` and
+    freeze that tick — do not hide the panel.
+    """
     try:
         import AppKit
         app = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
         if app is None:
-            return None
+            return PROBE_FAIL
         return resolve_profile(
             bundle=app.bundleIdentifier() or "",
             name=app.localizedName() or "",
         )
     except Exception:
-        return None
+        return PROBE_FAIL
 
 
 def frontmost_app_is_wechat() -> bool | None:
-    """Historical name: True when any supported IM profile is frontmost."""
-    try:
-        import AppKit
-        app = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
-        if app is None:
-            return None
-        return resolve_profile(
-            bundle=app.bundleIdentifier() or "",
-            name=app.localizedName() or "",
-        ) is not None
-    except Exception:
+    """Historical name: True when any supported IM profile is frontmost.
+
+    False = known other app. None = probe failed (do not treat as leave).
+    """
+    target = frontmost_target()
+    if target is PROBE_FAIL:
         return None
+    return target is not None
 
 
 def find_target_window(profile: AppProfile, previous_wid: int | None = None) -> WindowInfo | None:

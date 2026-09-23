@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 from app_profile import AppProfile, WECHAT, WECOM
-from perception import TextBlock, extract_messages, find_wechat_window
+from perception import PROBE_FAIL, TextBlock, extract_messages, find_wechat_window
 
 
 def hud_harness():
@@ -30,7 +30,8 @@ def hud_harness():
         method.decorator_list = []
     klass = ast.ClassDef(name='Harness', bases=[], keywords=[], body=methods, decorator_list=[])
     scope = {'fill': SimpleNamespace(locate_input=Mock(return_value={'box': None, 'rect': None, 'reason': 'test'})), 'time': time, 'threading': threading, '_log': lambda *_: None,
-             'AppProfile': AppProfile, 'frontmost_target': Mock(return_value=WECHAT),
+             'AppProfile': AppProfile, 'PROBE_FAIL': PROBE_FAIL,
+             'frontmost_target': Mock(return_value=WECHAT),
              'screen_capture_ok': Mock(return_value=True), 'request_screen_capture': Mock(),
              'read_conversation': Mock(),
              'PALETTE': {'muted': None}, 'CONTEXT_TURNS': 8, 'JUDGE_TURNS': 4,
@@ -305,6 +306,8 @@ class OutgoingTests(unittest.TestCase):
         self.h._win_wid = 7
         self.h._fingerprint = b'old-frame'
         HUD['read_conversation'].reset_mock()
+        self.h._clear_candidates.reset_mock()
+        self.h.applyChat_.reset_mock()
         HUD['frontmost_target'].return_value = WECOM
         HUD['read_conversation'].return_value = {
             'ok': True, 'unchanged': False, 'fingerprint': b'wecom-frame',
@@ -318,9 +321,37 @@ class OutgoingTests(unittest.TestCase):
             previous_wid=None, prev_fingerprint=None, prev_layout=None,
             profile=WECOM)
         self.h.applyForegroundHidden_.assert_not_called()
+        self.h._clear_candidates.assert_called()
+        self.h.applyChat_.assert_any_call("")
         self.assertIs(self.h._active_profile, WECOM)
         self.assertEqual(self.h._last_display_name, WECOM.display_name)
         self.assertEqual(self.h._win_wid, 11)
+
+    def test_switch_wechat_to_wecom_clears_rendered_candidates_without_hiding(self):
+        self.h._active_profile = WECHAT
+        self.h._last_display_name = WECHAT.display_name
+        self.h._last_intent = "约会议"
+        self.h._reply_epoch = 3
+        self.h._set_foreground_state(WECOM)
+        self.flush()
+        self.h.applyForegroundHidden_.assert_not_called()
+        self.h.applyHidden_.assert_not_called()
+        self.h._clear_candidates.assert_called()
+        self.h.applyChat_.assert_called_with("")
+        self.assertEqual(self.h._last_intent, "")
+        self.assertIs(self.h._active_profile, WECOM)
+
+    def test_probe_fail_does_not_treat_as_leave(self):
+        self.incoming()
+        old_epoch = self.h._reply_epoch
+        HUD['read_conversation'].reset_mock()
+        HUD['frontmost_target'].return_value = PROBE_FAIL
+        self.h._work_inner()
+        self.flush()
+        HUD['read_conversation'].assert_not_called()
+        self.h.applyForegroundHidden_.assert_not_called()
+        self.assertEqual(self.h._reply_epoch, old_epoch)
+        self.assertIs(self.h._active_profile, WECHAT)
 
     def test_return_with_multiple_wechat_windows_rediscovers_main(self):
         self.h._active_profile = None
