@@ -195,6 +195,7 @@ def find_target_window(profile: AppProfile, previous_wid: int | None = None) -> 
 
 
 def find_wechat_window(previous_wid: int | None = None) -> WindowInfo | None:
+    """WECHAT-only alias for ``find_target_window(WECHAT, …)``; ignores WeCom windows."""
     return find_target_window(WECHAT, previous_wid)
 
 
