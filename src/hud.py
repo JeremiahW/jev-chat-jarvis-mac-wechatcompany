@@ -1515,18 +1515,30 @@ class HudController(NSObject):
             key = (getattr(self, "_key_title", raw_title), newest.text)
         if key != self._reply_key:
             old_key = self._reply_key
+            session_switch = (isinstance(old_key, tuple) and isinstance(key, tuple)
+                              and old_key[0] != key[0])
             self._reply_epoch += 1
             self._reply_key = key
+            self._gen_epoch += 1
+            # Retire any in-flight judge/generate: epoch bump makes their results drop,
+            # and clearing _analyzing unblocks the settle gate (otherwise the new chat
+            # sits on 「上一条还在分析」while a 30s HTTP call from the old chat drains).
+            self._analyzing = False
             self.last_seen = None
             self.analyzed_text = None
             self._prejudge_req = self._prejudge_result = None
             self._pregen_req = self._pregen_result = None
-            self._gen_epoch += 1
-            # Title part of the key changed ⇒ user switched sessions. Clear the panel
-            # immediately (do not wait for applyIncoming); otherwise the previous chat's
-            # replies remain clickable under the new chat title.
-            if (isinstance(old_key, tuple) and isinstance(key, tuple)
-                    and old_key[0] != key[0]):
+            self.last_analyze_ts = 0
+            if session_switch:
+                # Drop cached pixels so the next tick OCR's the new chat, not the old one.
+                self._fingerprint = None
+                self._last_full = None
+                self._layout_key = None
+                self._stable_n = 0
+                self._burst_left = BURST_READS
+                self._next_read_ts = 0
+                _log(f"会话切换 · 中止上一会话的判断/生成，强制重读"
+                     f"（→ {key[0] or '新会话'}）")
                 self._push("applySessionSwitch:", key[0] or "新会话")
 
         # YOLO overlay: repaint whenever a read produced geometry — unchanged reads reuse
@@ -1737,10 +1749,22 @@ class HudController(NSObject):
                     and r[3] == self._reply_epoch):
                 self._pregen_result = None      # spent: each result is consumed exactly once
                 return r[2], (time.perf_counter() - t0) * 1000
-            if (not self._pregen_running
-                    and (self._pregen_req is None or self._pregen_req[0] != text)):
-                return None, (time.perf_counter() - t0) * 1000
-            time.sleep(0.03)
+            req = self._pregen_req
+            # Only wait on a job that is still ours. A superseded chat's HTTP may still be
+            # draining in _pregen_loop; blocking on it would freeze the new session's settle
+            # for up to the full API timeout ("上一条还在分析").
+            if req is not None and req[0] == text and req[3] == self._reply_epoch:
+                time.sleep(0.03)
+                continue
+            if self._pregen_running and req is None:
+                # Runner cleared the slot and is finishing someone else's (or ours, about to
+                # land in _pregen_result). Brief spin; reply_current / result checks above
+                # decide. Cap the spin so a dead foreign run cannot pin us for 30s.
+                if (time.perf_counter() - t0) * 1000 > 500:
+                    return None, (time.perf_counter() - t0) * 1000
+                time.sleep(0.03)
+                continue
+            return None, (time.perf_counter() - t0) * 1000
         return None, (time.perf_counter() - t0) * 1000
 
     @objc.python_method
@@ -1957,8 +1981,9 @@ class HudController(NSObject):
             self._render(key, "", PALETTE["muted"])
         if hasattr(self, "_risk_dots"):
             self._set_risk_scale(None)
-        self._set_candidate_header("候选回复")
-        self._render("status", f"已切换会话 · {title}" if title else "已切换会话",
+        self._set_candidate_header("候选回复 · 重新读屏…")
+        self._render("status",
+                     f"已切换会话 · 重新分析（{title}）" if title else "已切换会话 · 重新分析",
                      PALETTE["muted"])
 
     def applyWaiting_(self, _payload):

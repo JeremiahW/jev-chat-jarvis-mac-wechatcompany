@@ -237,6 +237,25 @@ class OutgoingTests(unittest.TestCase):
         self.flush()
         self.h.applySessionSwitch_.assert_called_once_with('another chat')
 
+    def test_session_switch_aborts_analyzing_and_forces_reread(self):
+        self.incoming()
+        self.h._analyzing = True
+        self.h._fingerprint = b'old-chat'
+        self.h._last_full = {'messages': []}
+        self.h.last_analyze_ts = time.time()
+        self.read([block('下午开会', .40, .70, .15)], title='another chat')
+        self.read([block('下午开会', .40, .70, .15)], title='another chat')
+        self.assertFalse(self.h._analyzing)
+        self.assertIsNone(self.h._fingerprint)
+        self.assertIsNone(self.h._last_full)
+        self.assertEqual(self.h.last_analyze_ts, 0)
+        # Same tick re-queues pregen/prejudge for the new session after the abort.
+        self.assertIsNotNone(self.h._pregen_req)
+        self.assertEqual(self.h._pregen_req[0], '下午开会')
+        self.assertEqual(self.h._pregen_req[3], self.h._reply_epoch)
+        self.assertIsNotNone(self.h._prejudge_req)
+        self.assertEqual(self.h._prejudge_req[4], self.h._reply_epoch)
+
     def test_prejudge_completion_cannot_repopulate_cleared_state(self):
         self.incoming()
         class Finished(BaseException):
