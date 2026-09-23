@@ -221,6 +221,10 @@ class OutgoingTests(unittest.TestCase):
     def test_same_text_in_different_chat_changes_epoch(self):
         self.incoming()
         epoch = self.h._reply_epoch
+        # Title must settle for 2 consecutive reads (OCR flicker guard) before the
+        # reply key adopts it when the newest them-text is unchanged.
+        self.read([block('下午开会', .40, .70, .15)], title='another chat')
+        self.assertEqual(self.h._reply_epoch, epoch)
         self.read([block('下午开会', .40, .70, .15)], title='another chat')
         self.assertGreater(self.h._reply_epoch, epoch)
 

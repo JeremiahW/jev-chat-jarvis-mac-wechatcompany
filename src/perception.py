@@ -631,6 +631,24 @@ def read_conversation(max_messages: int = 12, previous_wid: int | None = None,
     if input_top is not None and not .2 < input_top < .95:
         outline = None
         input_top = None
+    # Stabilize a jittering input separator (WeCom themes often flicker ±a few %).
+    # Same window size + a near-identical previous top keeps the layout key / fingerprint
+    # stable so OCR is not re-run every tick and newest-text does not thrash.
+    if (prev_layout is not None and len(prev_layout) >= 4
+            and prev_layout[0] == win.wid
+            and prev_layout[1] == win.w and prev_layout[2] == win.h
+            and prev_layout[3] is not None):
+        prev_top = prev_layout[3]
+        if input_top is None:
+            input_top = prev_top
+            # Keep settlement able to extract; synthetic open-bottom rect from sticky top.
+            if outline is None:
+                outline = (lay.chat_pane_x_min, prev_top,
+                           1.0 - lay.chat_pane_x_min, max(0.05, 1.0 - prev_top))
+        elif abs(input_top - prev_top) < 0.03:
+            input_top = prev_top
+            if outline is not None:
+                outline = (outline[0], prev_top, outline[2], outline[3])
     layout = (win.wid, win.w, win.h, input_top)
     visual_rect = ((win.x + outline[0]*win.w, win.y + outline[1]*win.h,
                     outline[2]*win.w, outline[3]*win.h) if outline else None)

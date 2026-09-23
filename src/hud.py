@@ -231,6 +231,9 @@ class HudController(NSObject):
         self._next_read_ts = 0.0    # reads before this timestamp are skipped (quiet screen)
         self._fingerprint = None    # last chat-pane fingerprint; equal ⇒ skip OCR entirely
         self._last_full = None      # last OCR'd result, reused while the pane is unchanged
+        self._key_title = ""        # settled chat title used in reply_key (OCR flicker guard)
+        self._key_title_pending = None
+        self._key_title_hits = 0
         self._analyzing = False     # judge+generate runs off the tick path
         # Pre-judgment: the local judge starts the moment a new message is seen, and the
         # settle gate consumes the verdict if the text is unchanged — intent/risk land on
@@ -1313,6 +1316,9 @@ class HudController(NSObject):
         self._fingerprint = None
         self._last_full = None
         self._win_wid = None
+        self._key_title = ""
+        self._key_title_pending = None
+        self._key_title_hits = 0
         self._input_target = None
         self._input_window = None
         self._input_next = 0
@@ -1423,6 +1429,9 @@ class HudController(NSObject):
                 self._fingerprint = None
                 self._last_full = None
                 self._win_wid = None
+                self._key_title = ""
+                self._key_title_pending = None
+                self._key_title_hits = 0
                 self._push("applyForegroundHidden:", res["error"])
             self._next_read_ts = time.time() + FAST_TICK
             return
@@ -1485,7 +1494,25 @@ class HudController(NSObject):
         newest = thems[-1] if thems else None
         prev_text = thems[-2].text if len(thems) > 1 else ""
 
-        key = (res.get("chat_title") or "", newest.text) if newest else None
+        # Reply epoch is (stable_chat_title, newest_text). Title OCR on WeCom flickers
+        # frame-to-frame; adopt a new title only after 2 consecutive hits, or immediately
+        # when the newest them-text itself changed (real chat switch usually moves both).
+        raw_title = res.get("chat_title") or ""
+        if newest is None:
+            key = None
+        else:
+            if newest.text != self.last_seen:
+                self._key_title = raw_title
+                self._key_title_pending = raw_title
+                self._key_title_hits = 2
+            elif raw_title == getattr(self, "_key_title_pending", None):
+                self._key_title_hits = getattr(self, "_key_title_hits", 0) + 1
+                if self._key_title_hits >= 2:
+                    self._key_title = raw_title
+            else:
+                self._key_title_pending = raw_title
+                self._key_title_hits = 1
+            key = (getattr(self, "_key_title", raw_title), newest.text)
         if key != self._reply_key:
             self._reply_epoch += 1
             self._reply_key = key
@@ -1738,15 +1765,20 @@ class HudController(NSObject):
         t0 = time.perf_counter()
         try:
             if not self._reply_current():
+                _log("生成放弃 · 已被更新的消息取代（停稳前）")
                 return
             context = self._context_text(msgs, newest)
             gen, wait_ms = self._take_pregen(newest.text, tuple(self.slot_tones))
             if not self._reply_current():
+                _log(f"生成放弃 · 已被更新的消息取代（等预生成 {wait_ms:.0f}ms 后）")
                 return
             note = f"（早跑命中，停稳后仅等 {wait_ms:.0f}ms）" if gen is not None else ""
             if gen is None:
                 gen = self.generator.generate(newest.text, "", list(self.slot_tones),
                                               context, self._stream_hook(t0))
+            if not self._reply_current():
+                _log("生成放弃 · 已被更新的消息取代（API 返回后）")
+                return
             self._finish_generate(gen, newest, t0, verdict, note)
         except Exception as e:
             _log(f"生成失败 {type(e).__name__}: {str(e)[:60]}")
@@ -1936,6 +1968,9 @@ class HudController(NSObject):
         self._render("status", "有新消息 · 等消息停稳…", PALETTE["muted"])
         self._render("message", text, PALETTE["muted"])   # grey: not analysed yet
         self._render("sender", self._context_line(sender, prev), PALETTE["muted"])
+        # Drop 「生成中」from a superseded run — otherwise OCR jitter on WeCom leaves the
+        # header stuck while every in-flight generation is retired by a newer epoch.
+        self._set_candidate_header("候选回复 · 等消息停稳…")
 
     def applyPending_(self, payload):
         text, sender, prev = payload
