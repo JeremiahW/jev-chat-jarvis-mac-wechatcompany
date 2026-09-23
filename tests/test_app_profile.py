@@ -21,6 +21,15 @@ class AppProfileTests(unittest.TestCase):
         for name in WECOM.app_names:
             self.assertIs(resolve_profile(name=name), WECOM)
 
+    def test_wecom_live_owner_is_first(self):
+        """5.0.11 on this Mac reports kCGWindowOwnerName='WeCom'."""
+        self.assertEqual(WECOM.app_names[0], "WeCom")
+        self.assertIn("企业微信", WECOM.app_names)
+        self.assertNotIn("WeChatWork", WECOM.app_names)
+        self.assertIs(resolve_profile(name="WeCom"), WECOM)
+        self.assertIs(resolve_profile(name="企业微信"), WECOM)
+        self.assertIsNone(resolve_profile(name="WeChatWork"))
+
     def test_sibling_names_rejected(self):
         for name in ("微信读书", "微信输入法"):
             self.assertIsNone(resolve_profile(name=name))

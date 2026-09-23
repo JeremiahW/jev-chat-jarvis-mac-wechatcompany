@@ -106,8 +106,9 @@ class TargetWindowTests(unittest.TestCase):
         self.assertIs(profile, WECHAT)
 
     def test_frontmost_target_wecom_by_name(self):
-        profile = frontmost_target("企业微信")
-        self.assertIs(profile, WECOM)
+        for name in WECOM.app_names:
+            with self.subTest(name=name):
+                self.assertIs(frontmost_target(name), WECOM)
 
     def test_frontmost_target_wecom_by_bundle(self):
         profile = frontmost_target("WeCom", bundle="com.tencent.WeWorkMac")

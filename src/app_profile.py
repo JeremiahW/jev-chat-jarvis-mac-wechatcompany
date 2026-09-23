@@ -49,8 +49,10 @@ WECHAT_LAYOUT = LayoutConstants(
     ui_noise=_WECHAT_NOISE,
 )
 
-# Provisional WeCom layout: copy WeChat numbers until Task 6 probe overwrites them.
-# Do not ship without completing Task 6 calibration.
+# Identity calibrated 企业微信 5.0.11 / owner=WeCom / 2026-09-23.
+# Layout still provisional (WeChat copy) pending JEV_BOXES HUD run with Screen Recording.
+# This CLI has no SCR grant: titles are None and capture/OCR cannot calibrate boxes.
+# Do not invent layout numbers; leave WeChat copy until a HUD boxes pass.
 WECOM_LAYOUT = LayoutConstants(
     chat_pane_x_min=0.32, sidebar_x_max=0.30,
     title_bar_y_max=0.90, input_area_y_min=0.24,
@@ -67,15 +69,19 @@ WECHAT = AppProfile(
     fill=FillConstants(preferred_chat_titles=("微信", "WeChat", "Weixin")),
 )
 
+# Calibrated identity on 企业微信 5.0.11 / owner=WeCom / 2026-09-23
+# Live kCGWindowOwnerName on this locale is WeCom (not 企业微信).
+# WeChatWork dropped: not observed as owner on 5.0.11; WeCom is the current EN name.
+# Titles: CLI has no Screen Recording so kCGWindowName is None — not product-empty.
+# Keep title aliases; re-probe under Screen Recording / HUD (JEV_BOXES=1).
 WECOM = AppProfile(
     id="wecom",
     display_name="企业微信",
-    # Confirm owner strings in Task 6; keep exact match only.
-    app_names=("企业微信", "WeChatWork", "WeCom"),
+    app_names=("WeCom", "企业微信"),
     bundle_id="com.tencent.WeWorkMac",
-    preferred_window_titles=("企业微信", "WeChatWork", "WeCom"),
+    preferred_window_titles=("WeCom", "企业微信"),
     layout=WECOM_LAYOUT,
-    fill=FillConstants(preferred_chat_titles=("企业微信", "WeChatWork", "WeCom")),
+    fill=FillConstants(preferred_chat_titles=("WeCom", "企业微信")),
 )
 
 PROFILES: tuple[AppProfile, ...] = (WECHAT, WECOM)
