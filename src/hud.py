@@ -1514,6 +1514,7 @@ class HudController(NSObject):
                 self._key_title_hits = 1
             key = (getattr(self, "_key_title", raw_title), newest.text)
         if key != self._reply_key:
+            old_key = self._reply_key
             self._reply_epoch += 1
             self._reply_key = key
             self.last_seen = None
@@ -1521,6 +1522,12 @@ class HudController(NSObject):
             self._prejudge_req = self._prejudge_result = None
             self._pregen_req = self._pregen_result = None
             self._gen_epoch += 1
+            # Title part of the key changed ⇒ user switched sessions. Clear the panel
+            # immediately (do not wait for applyIncoming); otherwise the previous chat's
+            # replies remain clickable under the new chat title.
+            if (isinstance(old_key, tuple) and isinstance(key, tuple)
+                    and old_key[0] != key[0]):
+                self._push("applySessionSwitch:", key[0] or "新会话")
 
         # YOLO overlay: repaint whenever a read produced geometry — unchanged reads reuse
         # the cached messages, so the boxes stay up even while the pane is quiet
@@ -1905,7 +1912,8 @@ class HudController(NSObject):
     @objc.python_method
     def _push(self, selector: str, payload=None):
         if selector in {"applyIncoming:", "applyPending:", "applyJudgment:",
-                        "applyCandidates:", "applyStreamLine:", "applyWaiting:", "applyError:"}:
+                        "applyCandidates:", "applyStreamLine:", "applyWaiting:",
+                        "applyError:", "applySessionSwitch:"}:
             epoch = getattr(self._reply_worker, "epoch", self._reply_epoch)
             self._push_reply(selector, payload, epoch)
             return
@@ -1934,9 +1942,24 @@ class HudController(NSObject):
         epoch, selector, payload = update
         if self._active_profile is None or epoch != self._reply_epoch:
             return
-        if selector not in {"applyWaiting:", "applyError:"} and not self._reply_current():
+        if selector not in {"applyWaiting:", "applyError:", "applySessionSwitch:"} and not self._reply_current():
             return
         getattr(self, selector.replace(":", "_"))(payload)
+
+    def applySessionSwitch_(self, title):
+        """Chat title settled on a different session — retire the previous chat's UI."""
+        self._show()
+        self._last_intent = ""
+        self._last_risk = 0.0
+        self._clear_candidates()
+        self._stream_rows = {}
+        for key in ("message", "sender", "intent", "confidence", "risk", "actions"):
+            self._render(key, "", PALETTE["muted"])
+        if hasattr(self, "_risk_dots"):
+            self._set_risk_scale(None)
+        self._set_candidate_header("候选回复")
+        self._render("status", f"已切换会话 · {title}" if title else "已切换会话",
+                     PALETTE["muted"])
 
     def applyWaiting_(self, _payload):
         self._show()
@@ -1962,14 +1985,15 @@ class HudController(NSObject):
 
     def applyIncoming_(self, payload):
         # a new message landed but we are not analysing yet (burst in progress):
-        # keep the previous verdict visible, just badge it
+        # keep the previous intent badge readable, but drop the previous chat's replies —
+        # otherwise switching sessions leaves stale 「填入」targets on screen.
         text, sender, prev = payload
         self._show()
         self._render("status", "有新消息 · 等消息停稳…", PALETTE["muted"])
         self._render("message", text, PALETTE["muted"])   # grey: not analysed yet
         self._render("sender", self._context_line(sender, prev), PALETTE["muted"])
-        # Drop 「生成中」from a superseded run — otherwise OCR jitter on WeCom leaves the
-        # header stuck while every in-flight generation is retired by a newer epoch.
+        self._clear_candidates()
+        self._stream_rows = {}
         self._set_candidate_header("候选回复 · 等消息停稳…")
 
     def applyPending_(self, payload):
@@ -2017,6 +2041,9 @@ class HudController(NSObject):
         if hasattr(self, "_risk_dots"):
             self._set_risk_scale(risk)
         self._render("actions", " · ".join(v.get("actions", [])), PALETTE["text"])
+        # Pre-judged path never went through applyPending_, so without this the previous
+        # message's replies stay on screen under 「生成中」— wrong chat, wrong 填入 target.
+        self._clear_candidates()
         self._set_candidate_header("候选回复 · 生成中…")
         # the verdict landing starts a new candidate run: without this reset, the streamed
         # line counters left over from the previous message would eat every new line

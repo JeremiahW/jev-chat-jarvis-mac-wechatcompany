@@ -22,7 +22,7 @@ def hud_harness():
     tree = ast.parse((ROOT / 'src/hud.py').read_text())
     source = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'HudController')
     names = {'_work_inner', '_set_foreground_state', '_push', '_reply_task', '_reply_current', '_push_reply',
-             'applyReplyUpdate_', 'applyWaiting_', '_context_text', '_stream_hook',
+             'applyReplyUpdate_', 'applyWaiting_', 'applySessionSwitch_', '_context_text', '_stream_hook',
              '_take_pregen', '_gen_with_pregen', '_finish_generate',
              '_prejudge_loop', '_pregen_loop'}
     methods = [n for n in source.body if isinstance(n, ast.FunctionDef) and n.name in names]
@@ -87,7 +87,7 @@ class OutgoingTests(unittest.TestCase):
         for name in ['applyIncoming_', 'applyPending_', 'applyJudgment_',
                      'applyCandidates_', 'applyStreamLine_', 'applyError_',
                      'applyPosition_', 'applyChat_', 'applyBoxes_', 'applyHidden_',
-                     'applyForegroundHidden_']:
+                     'applyForegroundHidden_', 'applySessionSwitch_']:
             setattr(h, name, Mock())
         self.queue = []
         h.performSelectorOnMainThread_withObject_waitUntilDone_ = lambda s, p, w: self.queue.append((s, p))
@@ -227,6 +227,15 @@ class OutgoingTests(unittest.TestCase):
         self.assertEqual(self.h._reply_epoch, epoch)
         self.read([block('下午开会', .40, .70, .15)], title='another chat')
         self.assertGreater(self.h._reply_epoch, epoch)
+
+    def test_session_title_switch_clears_previous_candidates(self):
+        self.incoming()
+        self.flush()
+        self.h.applySessionSwitch_.reset_mock()
+        self.read([block('下午开会', .40, .70, .15)], title='another chat')
+        self.read([block('下午开会', .40, .70, .15)], title='another chat')
+        self.flush()
+        self.h.applySessionSwitch_.assert_called_once_with('another chat')
 
     def test_prejudge_completion_cannot_repopulate_cleared_state(self):
         self.incoming()
