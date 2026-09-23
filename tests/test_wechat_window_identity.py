@@ -20,7 +20,7 @@ import perception
 from perception import find_wechat_window
 
 # Apps whose display names merely contain 微信 / WeChat but are not WeChat itself.
-SIBLING_APPS = ("微信读书", "微信输入法", "企业微信", "WeChatWork")
+SIBLING_APPS = ("微信读书", "微信输入法")
 
 
 def window(owner, title, w, h, wid=1, pid=1):
@@ -120,6 +120,9 @@ class WeChatWindowIdentityTests(unittest.TestCase):
             with self.subTest(rejected=name):
                 self.assertFalse(frontmost(name))
                 self.assertIsNone(find_with([window(name, name, 1728, 990)]))
+
+    def test_wechat_helper_still_rejects_wecom(self):
+        self.assertIsNone(find_with([window("企业微信", "企业微信", 1200, 800)]))
 
     def test_bundle_id_still_identifies_wechat_under_any_display_name(self):
         self.assertTrue(frontmost('WeChat', bundle='com.tencent.xinWeChat'))
