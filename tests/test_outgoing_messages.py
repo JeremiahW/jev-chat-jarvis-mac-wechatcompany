@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
+from app_profile import AppProfile, WECHAT, WECOM
 from perception import TextBlock, extract_messages, find_wechat_window
 
 
@@ -29,7 +30,7 @@ def hud_harness():
         method.decorator_list = []
     klass = ast.ClassDef(name='Harness', bases=[], keywords=[], body=methods, decorator_list=[])
     scope = {'fill': SimpleNamespace(locate_input=Mock(return_value={'box': None, 'rect': None, 'reason': 'test'})), 'time': time, 'threading': threading, '_log': lambda *_: None,
-             'frontmost_app_is_wechat': Mock(return_value=True),
+             'AppProfile': AppProfile, 'frontmost_target': Mock(return_value=WECHAT),
              'screen_capture_ok': Mock(return_value=True), 'request_screen_capture': Mock(),
              'read_conversation': Mock(),
              'PALETTE': {'muted': None}, 'CONTEXT_TURNS': 8, 'JUDGE_TURNS': 4,
@@ -53,9 +54,9 @@ class OutgoingTests(unittest.TestCase):
         self.h = h = Harness()
         HUD['read_conversation'].reset_mock()
         HUD['read_conversation'].side_effect = None
-        HUD['frontmost_app_is_wechat'].reset_mock()
-        HUD['frontmost_app_is_wechat'].side_effect = None
-        HUD['frontmost_app_is_wechat'].return_value = True
+        HUD['frontmost_target'].reset_mock()
+        HUD['frontmost_target'].side_effect = None
+        HUD['frontmost_target'].return_value = WECHAT
         HUD['screen_capture_ok'].reset_mock()
         HUD['screen_capture_ok'].return_value = True
         for name, value in dict(
@@ -66,7 +67,7 @@ class OutgoingTests(unittest.TestCase):
             _pregen_req=None, _pregen_result=None, _pregen_running=False,
             _prejudging=False, _paused=False, _analyzing=False,
             _stable_n=0, last_change_ts=0, last_analyze_ts=0,
-            _wechat_frontmost=None, _foreground_epoch=0,
+            _active_profile=None, _last_display_name='聊天应用', _foreground_epoch=0,
             _read_fail_since=None, _read_fail_hidden=False,
             _prejudge_event=threading.Event(), _pregen_event=threading.Event(),
             slot_tones=['normal'], _stream_rows={}, _last_context=None,
@@ -254,7 +255,7 @@ class OutgoingTests(unittest.TestCase):
         self.incoming()
         old_epoch = self.h._reply_epoch
         HUD['read_conversation'].reset_mock()
-        HUD['frontmost_app_is_wechat'].return_value = False
+        HUD['frontmost_target'].return_value = None
         HUD['screen_capture_ok'].return_value = False
 
         self.h._work_inner()
@@ -262,18 +263,18 @@ class OutgoingTests(unittest.TestCase):
 
         HUD['read_conversation'].assert_not_called()
         self.h.applyError_.assert_not_called()
-        self.h.applyForegroundHidden_.assert_called_once()
+        self.h.applyForegroundHidden_.assert_called_once_with('微信不在前台')
         self.assertGreater(self.h._reply_epoch, old_epoch)
         self.assertIsNone(self.h._reply_key)
         self.assertIsNone(self.h._last_full)
         self.assertIsNone(self.h._fingerprint)
 
     def test_return_to_wechat_forces_fresh_window_read(self):
-        self.h._wechat_frontmost = False
+        self.h._active_profile = None
         self.h._win_wid = 7
         self.h._fingerprint = b'old-frame'
         self.h._last_full = {'messages': ['stale']}
-        HUD['frontmost_app_is_wechat'].return_value = True
+        HUD['frontmost_target'].return_value = WECHAT
         HUD['read_conversation'].return_value = {
             'ok': True, 'unchanged': False, 'fingerprint': b'new-frame',
             'window': {'wid': 9}, 'chat_title': 'current', 'messages': [],
@@ -282,31 +283,50 @@ class OutgoingTests(unittest.TestCase):
         self.h._work_inner()
 
         HUD['read_conversation'].assert_called_once_with(
-            previous_wid=None, prev_fingerprint=None, prev_layout=None)
+            previous_wid=None, prev_fingerprint=None, prev_layout=None,
+            profile=WECHAT)
         self.assertEqual(self.h._win_wid, 9)
 
-    def test_unknown_foreground_state_does_not_fake_an_app_switch(self):
-        self.incoming()
+    def test_already_background_does_not_retrigger_leave(self):
+        self.h._active_profile = None
         old_epoch = self.h._reply_epoch
-        old_key = self.h._reply_key
-        old_full = self.h._last_full
         HUD['read_conversation'].reset_mock()
-        HUD['frontmost_app_is_wechat'].return_value = None
+        HUD['frontmost_target'].return_value = None
 
         self.h._work_inner()
         self.flush()
 
         HUD['read_conversation'].assert_not_called()
-        self.h.applyHidden_.assert_not_called()
+        self.h.applyForegroundHidden_.assert_not_called()
         self.assertEqual(self.h._reply_epoch, old_epoch)
-        self.assertEqual(self.h._reply_key, old_key)
-        self.assertIs(self.h._last_full, old_full)
 
-    def test_return_with_multiple_wechat_windows_rediscovers_main(self):
-        self.h._wechat_frontmost = False
+    def test_switch_wechat_to_wecom_clears_and_rereads(self):
+        self.incoming()
         self.h._win_wid = 7
         self.h._fingerprint = b'old-frame'
-        HUD['frontmost_app_is_wechat'].return_value = True
+        HUD['read_conversation'].reset_mock()
+        HUD['frontmost_target'].return_value = WECOM
+        HUD['read_conversation'].return_value = {
+            'ok': True, 'unchanged': False, 'fingerprint': b'wecom-frame',
+            'window': {'wid': 11}, 'chat_title': 'work', 'messages': [],
+        }
+
+        self.h._work_inner()
+        self.flush()
+
+        HUD['read_conversation'].assert_called_once_with(
+            previous_wid=None, prev_fingerprint=None, prev_layout=None,
+            profile=WECOM)
+        self.h.applyForegroundHidden_.assert_not_called()
+        self.assertIs(self.h._active_profile, WECOM)
+        self.assertEqual(self.h._last_display_name, WECOM.display_name)
+        self.assertEqual(self.h._win_wid, 11)
+
+    def test_return_with_multiple_wechat_windows_rediscovers_main(self):
+        self.h._active_profile = None
+        self.h._win_wid = 7
+        self.h._fingerprint = b'old-frame'
+        HUD['frontmost_target'].return_value = WECHAT
         detached = {
             'kCGWindowOwnerName': 'WeChat', 'kCGWindowNumber': 2,
             'kCGWindowName': '微信 (窗口)', 'kCGWindowOwnerPID': 1,
@@ -318,10 +338,11 @@ class OutgoingTests(unittest.TestCase):
             'kCGWindowBounds': {'Width': 754, 'Height': 593},
         }
 
-        def fresh_read(previous_wid, prev_fingerprint, prev_layout):
+        def fresh_read(previous_wid, prev_fingerprint, prev_layout, profile=None):
             self.assertIsNone(previous_wid)
             self.assertIsNone(prev_fingerprint)
             self.assertIsNone(prev_layout)
+            self.assertIs(profile, WECHAT)
             with patch('Quartz.CGWindowListCopyWindowInfo', return_value=[detached, main]):
                 selected = find_wechat_window(previous_wid)
             return {
@@ -335,8 +356,8 @@ class OutgoingTests(unittest.TestCase):
         self.assertEqual(self.h._win_wid, 1)
 
     def test_switch_during_capture_discards_snapshot(self):
-        states = iter([True, False])
-        HUD['frontmost_app_is_wechat'].side_effect = lambda: next(states)
+        states = iter([WECHAT, None])
+        HUD['frontmost_target'].side_effect = lambda: next(states)
         HUD['read_conversation'].return_value = {
             'ok': True, 'unchanged': False, 'fingerprint': b'stale',
             'window': {'wid': 7}, 'chat_title': 'stale', 'messages': [],
@@ -353,11 +374,11 @@ class OutgoingTests(unittest.TestCase):
         self.assertIsNone(self.h._last_full)
 
     def test_leave_and_return_during_capture_discards_old_snapshot(self):
-        HUD['frontmost_app_is_wechat'].return_value = True
+        HUD['frontmost_target'].return_value = WECHAT
 
         def read_then_round_trip(**_kwargs):
-            self.h._set_foreground_state(False)
-            self.h._set_foreground_state(True)
+            self.h._set_foreground_state(None)
+            self.h._set_foreground_state(WECHAT)
             return {
                 'ok': True, 'unchanged': False, 'fingerprint': b'stale',
                 'window': {'wid': 7}, 'chat_title': 'stale', 'messages': [],
@@ -382,7 +403,8 @@ class OutgoingTests(unittest.TestCase):
         self.assertIsNotNone(self.h._read_fail_since)
 
     def test_sustained_read_failure_hides_and_forces_rediscovery(self):
-        self.h._wechat_frontmost = True
+        self.h._active_profile = WECHAT
+        self.h._last_display_name = WECHAT.display_name
         self.h._foreground_epoch = 1
         self.h._win_wid = 7
         self.h._fingerprint = b'old'

@@ -175,7 +175,8 @@ def hud_harness():
     source = ast.parse((ROOT / 'src/hud.py').read_text())
     cls = next(n for n in source.body if isinstance(n, ast.ClassDef) and n.name == 'HudController')
     methods = [n for n in cls.body if isinstance(n, ast.FunctionDef)
-               and n.name in {'_render', '_refresh_model_status', 'tick_', 'applyHidden_'}]
+               and n.name in {'_render', '_refresh_model_status', 'tick_',
+                              'applyHidden_', '_set_foreground_state'}]
     for method in methods:
         method.decorator_list = []
         method.returns = None
@@ -184,8 +185,8 @@ def hud_harness():
     module = ast.fix_missing_locations(ast.Module(body=[ast.ClassDef(
         name='Harness', bases=[], keywords=[], body=methods, decorator_list=[])], type_ignores=[]))
     scope = {'PALETTE': {'amber': 'amber', 'muted': 'muted', 'red': 'red'},
-            # tick_ 的前台检查在本测试作用域外：None 表示检查不了，tick_ 直接返回
-            'frontmost_app_is_wechat': lambda: None}
+            # tick_ 的前台检查在本测试作用域外：None 表示没有支持的 IM 在前台
+            'frontmost_target': lambda: None}
     exec(compile(module, 'hud.py', 'exec'), scope)
     return scope['Harness']
 
@@ -197,11 +198,12 @@ class HudStatusTests(unittest.TestCase):
         h._show = Mock()
         h.panel = Mock()
         h.panel.isVisible.return_value = False
-        h._wechat_frontmost = None
+        h._active_profile = None
+        h._last_display_name = '聊天应用'
         h.judge = SimpleNamespace(load_status=None)
         h._model_status = None
         h._paused = True
-        h._render('status', '等待微信消息…', 'muted')
+        h._render('status', '等待消息…', 'muted')
         h.judge.load_status = '下载判断模型 34% · 1.2/3.8 GB'
         h.tick_(None)
         h.rows['status'].setStringValue_.assert_called_with(h.judge.load_status)
