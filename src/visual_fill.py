@@ -19,10 +19,12 @@ def plain_text(text):
                    if c in '\r\n\t\u0085\u2028\u2029' or unicodedata.category(c) not in ('Cc', 'Cs'))
 
 
-def window_is_current(win, app, require_front=False):
+def window_is_current(win, app, require_front=False, profile=None):
     import fill
-    from perception import find_wechat_window
-    current = find_wechat_window(win['wid'])
+    from app_profile import WECHAT
+    from perception import find_target_window
+    profile = profile or WECHAT
+    current = find_target_window(profile, win['wid'])
     if current is None or current.wid != win['wid'] or current.pid != app.processIdentifier():
         return False
     if not fill._same_rect(tuple(getattr(current,k) for k in ('x','y','w','h')),
@@ -83,10 +85,12 @@ def _key(pid, code, flags=0):
 
 def write_text(text, target, app):
     import fill
+    from app_profile import WECHAT
     global _LAST_ATTEMPT
     win=target['window']
-    if not window_is_current(win,app):
-        return False,'微信窗口已变化，请等检测框更新后重试'
+    profile = target.get('profile') or WECHAT
+    if not window_is_current(win,app,profile=profile):
+        return False,f'{profile.display_name}窗口已变化，请等检测框更新后重试'
     rect=locate_visual_input(win)
     if not fill._same_rect(rect,target.get('visual_rect')):
         return False,'输入区已变化，请等检测框更新后重试'
@@ -109,21 +113,21 @@ def write_text(text, target, app):
     point=(x+min(80,w/4),y+min(h*.5,max(20,h-60)))
     app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
     time.sleep(.15)
-    if not window_is_current(win,app,require_front=True):
-        return False,'微信没有获得焦点，请先点微信输入区再重试'
+    if not window_is_current(win,app,require_front=True,profile=profile):
+        return False,f'{profile.display_name}没有获得焦点，请先点{profile.display_name}输入区再重试'
     for event_type in (Q.kCGEventLeftMouseDown,Q.kCGEventLeftMouseUp):
         event=Q.CGEventCreateMouseEvent(None,event_type,point,Q.kCGMouseButtonLeft)
         Q.CGEventSetFlags(event, 0)
         Q.CGEventSetIntegerValueField(event, Q.kCGMouseEventClickState, 1)
         Q.CGEventPost(Q.kCGHIDEventTap,event)
     time.sleep(.15)
-    if not window_is_current(win,app,require_front=True):
+    if not window_is_current(win,app,require_front=True,profile=profile):
         return False,'焦点发生变化，已停止填入'
     if not same_signature(chat_signature(win,rect),signature):
         return False,'会话已变化，已停止填入'
     _LAST_ATTEMPT=(stamp,time.monotonic())
     for offset in range(0,len(text),20):
-        if (not window_is_current(win,app,require_front=True)
+        if (not window_is_current(win,app,require_front=True,profile=profile)
                 or not same_signature(chat_signature(win,rect),signature)):
             return False,'窗口或会话变化，输入已中止；请检查草稿，勿重复点击'
         chunk=text[offset:offset+20]

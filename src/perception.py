@@ -608,7 +608,7 @@ def read_conversation(max_messages: int = 12, previous_wid: int | None = None,
     # sufficient to exclude drafts, even if the toolbar above it remains visible.
     if outline is None:
         import fill
-        target = fill.locate_input(window)
+        target = fill.locate_input(window, profile)
         rect = target.get("rect")
         if rect:
             x, y, w, h = rect

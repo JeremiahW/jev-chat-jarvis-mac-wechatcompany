@@ -41,28 +41,31 @@ import time
 import AppKit
 import ApplicationServices
 
-WECHAT_BUNDLE_ID = "com.tencent.xinWeChat"
-WECHAT_NAMES = ("微信", "WeChat")
+from app_profile import WECHAT, AppProfile
 
-# WeChat owns two windows: a small untitled one and the chat window. The input box lives in
-# the latter, so it is searched first and the untitled window is only a fallback.
-CHAT_WINDOW_TITLE = "微信"
-INPUT_ROLE = "AXTextArea"
-# The chat window holds TWO text areas, and picking the wrong one writes the reply into
-# WeChat's sidebar search field (measured: search 127x23, message box 643x129). Size is the
-# only thing that separates them reliably, so the largest wins and anything smaller than
-# this floor is refused outright rather than guessed at — the two differ by ~24x, so the
-# floor is not a close call. (Area is in points^2.)
-MIN_INPUT_AREA = 10000.0
 # One node per visible message means a busy chat window is a large tree; this ceiling keeps
 # a miss cheap instead of walking thousands of nodes.
 MAX_NODES = 2000
 
+
+def _reason_no_app(profile) -> str:
+    return f"没找到{profile.display_name}应用"
+
+
+def _reason_no_input(profile) -> str:
+    return f"未取得可用的{profile.display_name}输入控件"
+
+
+def _title_sort_key(title, profile) -> bool:
+    """True (sorts later) when the AX window title is not a preferred chat title."""
+    return title not in profile.fill.preferred_chat_titles
+
+
 # Reason strings are shown by the HUD in its status line, so they read as sentences.
 REASON_EMPTY = "没有可填入的内容"
 REASON_NO_ACCESS = "未授予辅助功能权限"
-REASON_NO_WECHAT = "没找到微信应用"
-REASON_NO_INPUT = "未取得可用的微信输入控件"
+REASON_NO_WECHAT = _reason_no_app(WECHAT)
+REASON_NO_INPUT = _reason_no_input(WECHAT)
 REASON_WRITE_FAILED = "写入输入框失败"
 REASON_NOT_VERIFIED = "写入后没读到内容，可能没填进去"
 REASON_BUSY = "上一次填入还没结束"
@@ -90,11 +93,11 @@ def request_accessibility() -> bool:
         return has_accessibility()
 
 
-def _wechat_app():
-    """The running WeChat: bundle id first, window-owner name as the fallback."""
+def _target_app(profile: AppProfile):
+    """The running IM: bundle id first, window-owner name as the fallback."""
     try:
         apps = AppKit.NSRunningApplication.runningApplicationsWithBundleIdentifier_(
-            WECHAT_BUNDLE_ID)
+            profile.bundle_id)
         if apps and len(apps) > 0:
             return apps[0]
     except Exception:
@@ -102,11 +105,15 @@ def _wechat_app():
     try:
         for app in AppKit.NSWorkspace.sharedWorkspace().runningApplications():
             name = app.localizedName() or ""
-            if name in WECHAT_NAMES or app.bundleIdentifier() == WECHAT_BUNDLE_ID:
+            if name in profile.app_names or app.bundleIdentifier() == profile.bundle_id:
                 return app
     except Exception:
         pass
     return None
+
+
+def _wechat_app():
+    return _target_app(WECHAT)
 
 
 def _ax_attr(element, name):
@@ -148,18 +155,20 @@ def _same_rect(a, b):
     return a is not None and b is not None and all(abs(x-y) <= 3 for x, y in zip(a, b))
 
 
-def locate_input(win):
+def locate_input(win, profile: AppProfile | None = None):
     """Read-only target shared by the overlay and Fill; never request permission here."""
-    result = {"box": None, "rect": None, "window": win, "reason": REASON_NO_INPUT}
+    profile = profile or WECHAT
+    result = {"box": None, "rect": None, "window": win, "reason": _reason_no_input(profile),
+              "profile": profile}
     if not has_accessibility():
         result["reason"] = REASON_NO_ACCESS
         return result
-    app = _wechat_app()
+    app = _target_app(profile)
     if app is None:
-        result["reason"] = REASON_NO_WECHAT
+        result["reason"] = _reason_no_app(profile)
         return result
     bounds = tuple(win[k] for k in ("x", "y", "w", "h"))
-    box = _find_input_box(app.processIdentifier(), bounds)
+    box = _find_input_box(app.processIdentifier(), bounds, profile)
     if box is None:
         return result
     rect = _ax_rect(box)
@@ -169,7 +178,7 @@ def locate_input(win):
     x, y, w, h = rect
     wx, wy, ww, wh = bounds
     if not (wx <= x and wy <= y and x+w <= wx+ww+3 and y+h <= wy+wh+3):
-        result["reason"] = "输入控件不在当前微信窗口内"
+        result["reason"] = f"输入控件不在当前{profile.display_name}窗口内"
         return result
     result.update(box=box, rect=rect, reason="填入目标")
     if _ax_value(box) is None:
@@ -177,8 +186,8 @@ def locate_input(win):
     return result
 
 
-def _find_input_box(pid: int, window_rect=None):
-    """WeChat's message input box, or None.
+def _find_input_box(pid: int, window_rect=None, profile=None):
+    """The IM's message input box, or None.
 
     Returns the LARGEST text area in the chat window, not the first one found: WeChat's
     accessibility tree contains both the sidebar search field and the message box, and the
@@ -187,8 +196,10 @@ def _find_input_box(pid: int, window_rect=None):
     writing and reading both go through the same wrong element and agree with each other.
 
     The walk is breadth-first and bounded: a busy chat window carries a node per visible
-    message.
+    message. Role, min area, and preferred titles come from ``profile.fill``.
     """
+    profile = profile or WECHAT
+    fill_c = profile.fill
     app_el = ApplicationServices.AXUIElementCreateApplication(pid)
     windows = _ax_attr(app_el, ApplicationServices.kAXWindowsAttribute) or []
     if not windows:
@@ -196,8 +207,8 @@ def _find_input_box(pid: int, window_rect=None):
     # the chat window first; sorted() is stable, so the fallback keeps its own order
     ordered = sorted(
         windows,
-        key=lambda w: _ax_attr(w, ApplicationServices.kAXTitleAttribute)
-        != CHAT_WINDOW_TITLE)
+        key=lambda w: _title_sort_key(
+            _ax_attr(w, ApplicationServices.kAXTitleAttribute), profile))
 
     best, best_area = None, 0.0
     for window in ordered:
@@ -207,14 +218,14 @@ def _find_input_box(pid: int, window_rect=None):
         while queue and seen < MAX_NODES:
             el = queue.pop(0)
             seen += 1
-            if _ax_attr(el, ApplicationServices.kAXRoleAttribute) == INPUT_ROLE:
+            if _ax_attr(el, ApplicationServices.kAXRoleAttribute) == fill_c.input_role:
                 size = _ax_size(el)
                 area = size[0] * size[1] if size else 0.0
                 if area > best_area:
                     best, best_area = el, area
             queue.extend(_ax_attr(el, ApplicationServices.kAXChildrenAttribute) or [])
 
-    if best is None or best_area < MIN_INPUT_AREA:
+    if best is None or best_area < fill_c.min_input_area:
         return None
     return best
 
@@ -264,12 +275,13 @@ def _duplicate_blocked(text: str, current: str,
             and (now - last_ts) < DUPLICATE_WINDOW_S)
 
 
-def fill_text(text: str, target=None) -> tuple[bool, str]:
-    """Write `text` into WeChat's input box, appended to whatever is already typed there.
+def fill_text(text: str, target=None, profile: AppProfile | None = None) -> tuple[bool, str]:
+    """Write `text` into the IM input box, appended to whatever is already typed there.
 
     Returns (ok, reason). Appending keeps this equivalent to the paste it replaces: a paste
     lands at the caret, which is the end of the box once the user has been typing. Success
-    is never reported without reading the text back.
+    is never reported without reading the text back. Profile comes from the argument, then
+    ``target["profile"]``, then WECHAT.
     """
     global _LAST_FILL
     text = (text or "").strip()
@@ -279,33 +291,38 @@ def fill_text(text: str, target=None) -> tuple[bool, str]:
         # a fill is still running; a second write now would double the text
         return False, REASON_BUSY
     try:
+        if profile is None and target is not None:
+            profile = target.get("profile")
+        profile = profile or WECHAT
         if not has_accessibility():
             return False, REASON_NO_ACCESS
 
-        app = _wechat_app()
+        app = _target_app(profile)
         if app is None:
-            return False, REASON_NO_WECHAT
+            return False, _reason_no_app(profile)
 
         if target is not None and target['box'] is None and target.get('visual_rect'):
             from visual_fill import write_text
             try:
+                if target.get("profile") is None:
+                    target = dict(target, profile=profile)
                 return write_text(text, target, app)
             except Exception:
                 return False, '输入过程异常，请先检查草稿，勿重复点击'
         if target is not None:
-            fresh = locate_input(target["window"])
+            fresh = locate_input(target["window"], profile)
             box = fresh["box"]
             if (box is None or target["box"] is None or box != target["box"]
                     or not _same_rect(fresh["rect"], target["rect"])):
                 return False, "输入目标已变化，请等检测框更新后重试"
         else:
-            box = _find_input_box(app.processIdentifier())
+            box = _find_input_box(app.processIdentifier(), profile=profile)
         if box is None:
-            return False, REASON_NO_INPUT
+            return False, _reason_no_input(profile)
 
         current = _ax_value(box)
         if current is None:
-            return False, REASON_NO_INPUT
+            return False, _reason_no_input(profile)
 
         # checked before the write, so a refused repeat leaves the box untouched
         if _duplicate_blocked(text, current, _LAST_FILL, time.monotonic()):
@@ -329,13 +346,13 @@ if __name__ == "__main__":
     import sys
 
     print(f"辅助功能权限: {'已授予' if has_accessibility() else '未授予'}")
-    _app = _wechat_app()
+    _app = _target_app(WECHAT)
     if _app is None:
-        print("微信进程: 未找到")
+        print(f"{WECHAT.display_name}进程: 未找到")
     else:
-        print(f"微信进程: {_app.localizedName()} ({_app.bundleIdentifier()})")
+        print(f"{WECHAT.display_name}进程: {_app.localizedName()} ({_app.bundleIdentifier()})")
         if has_accessibility():
-            _box = _find_input_box(_app.processIdentifier())
+            _box = _find_input_box(_app.processIdentifier(), profile=WECHAT)
             print(f"输入框: {'已找到（可以填入）' if _box is not None else '没找到'}")
     if len(sys.argv) > 1:
         print(f"填入结果: {fill_text(sys.argv[1])}")
