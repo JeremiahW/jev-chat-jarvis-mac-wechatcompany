@@ -20,9 +20,9 @@ from pathlib import Path
 
 import Quartz
 
-from app_profile import WECHAT, resolve_profile, AppProfile
+from app_profile import WECHAT, resolve_profile, AppProfile, LayoutConstants
 
-# Temporary aliases of WECHAT.layout.* for probe scripts; remove after Task 3.
+# Compat aliases of WECHAT.layout.* for probe scripts.
 CHAT_PANE_X_MIN = WECHAT.layout.chat_pane_x_min
 TITLE_BAR_Y_MAX = WECHAT.layout.title_bar_y_max
 INPUT_AREA_Y_MIN = WECHAT.layout.input_area_y_min
@@ -30,9 +30,7 @@ SIDEBAR_X_MAX = WECHAT.layout.sidebar_x_max
 
 # --- content filters ---
 TIMESTAMP_RE = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?$")
-UI_NOISE = (r"折叠聊天", r"共\s*\d+", r"搜索", r"发送", r"拖入文件", r"按住说话",
-            r"语音输入文字", r"按住鼠标", r"按住 说话", r"输入文字",
-            r"^[\w\-\u4e00-\u9fa5]{2,20}[:：].*\.\.\..*[）)]>$")  # folded-chat banner
+UI_NOISE = WECHAT.layout.ui_noise
 MIN_CONF = 0.30
 USERNAME_H_MAX = 0.026   # sender-name lines render smaller than bubble text
 MESSAGE_H_MIN = 0.028
@@ -208,7 +206,8 @@ def capture_window(wid: int, out: Path) -> bool:
 # ----------------------------------------------------------------------------- ocr
 
 
-def _vision_blocks(handler, languages, chat_only: bool, input_top=None) -> list[TextBlock]:
+def _vision_blocks(handler, languages, chat_only: bool, input_top=None,
+                   chat_pane_x_min=None, input_area_y_min=None) -> list[TextBlock]:
     """Run one Vision text request against a handler that is already built.
 
     Shared by the file path and the in-memory path so the request settings — the part that
@@ -218,6 +217,8 @@ def _vision_blocks(handler, languages, chat_only: bool, input_top=None) -> list[
     from Quartz import CGRectMake
 
     blocks: list[TextBlock] = []
+    pane_x = WECHAT.layout.chat_pane_x_min if chat_pane_x_min is None else chat_pane_x_min
+    input_y = WECHAT.layout.input_area_y_min if input_area_y_min is None else input_area_y_min
 
     def completion(request, error):
         if error:
@@ -244,8 +245,8 @@ def _vision_blocks(handler, languages, chat_only: bool, input_top=None) -> list[
         # Vision region of interest: normalized, origin BOTTOM-LEFT. Skipping the chat
         # list roughly halves OCR time. Note Vision then reports each observation's
         # bounding box RELATIVE TO THE ROI, so we convert back to full-window space.
-        bottom = INPUT_AREA_Y_MIN if input_top is None else 1.0 - input_top
-        roi = (CHAT_PANE_X_MIN, bottom, 1.0 - CHAT_PANE_X_MIN, 1.0 - bottom)
+        bottom = input_y if input_top is None else 1.0 - input_top
+        roi = (pane_x, bottom, 1.0 - pane_x, 1.0 - bottom)
         req.setRegionOfInterest_(CGRectMake(*roi))
     handler.performRequests_error_([req], None)
 
@@ -259,7 +260,8 @@ def _vision_blocks(handler, languages, chat_only: bool, input_top=None) -> list[
     return blocks
 
 
-def ocr(path: Path, languages=("zh-Hans",), chat_only: bool = True, input_top=None) -> list[TextBlock]:
+def ocr(path: Path, languages=("zh-Hans",), chat_only: bool = True, input_top=None,
+        chat_pane_x_min=None, input_area_y_min=None) -> list[TextBlock]:
     """Vision OCR over the chat pane, from a PNG on disk.
 
     zh-Hans alone: adding "en-US" bought nothing and cost time — on one screenshot the two
@@ -277,7 +279,8 @@ def ocr(path: Path, languages=("zh-Hans",), chat_only: bool = True, input_top=No
 
     url = NSURL.fileURLWithPath_(str(path))
     handler = Vision.VNImageRequestHandler.alloc().initWithURL_options_(url, None)
-    return _vision_blocks(handler, languages, chat_only, input_top)
+    return _vision_blocks(handler, languages, chat_only, input_top,
+                          chat_pane_x_min=chat_pane_x_min, input_area_y_min=input_area_y_min)
 
 
 def capture_image(wid: int, nominal: bool = True):
@@ -312,11 +315,13 @@ def capture_image(wid: int, nominal: bool = True):
         return None
 
 
-def ocr_image(image, languages=("zh-Hans",), chat_only: bool = True, input_top=None) -> list[TextBlock]:
+def ocr_image(image, languages=("zh-Hans",), chat_only: bool = True, input_top=None,
+              chat_pane_x_min=None, input_area_y_min=None) -> list[TextBlock]:
     """Same request as ocr(), fed a CGImage directly — no PNG encode, no temp file."""
     import Vision
     handler = Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(image, None)
-    return _vision_blocks(handler, languages, chat_only, input_top)
+    return _vision_blocks(handler, languages, chat_only, input_top,
+                          chat_pane_x_min=chat_pane_x_min, input_area_y_min=input_area_y_min)
 
 
 def warm_ocr() -> float:
@@ -350,7 +355,7 @@ def warm_ocr() -> float:
 _FP_W, _FP_H = 128, 224
 
 
-def _fingerprint(image, input_top=None) -> bytes | None:
+def _fingerprint(image, input_top=None, chat_pane_x_min=None, input_area_y_min=None) -> bytes | None:
     """The chat pane (title band down to just above the input box) as a small grayscale
     thumbnail; None when anything in the pipeline refuses.
 
@@ -358,21 +363,23 @@ def _fingerprint(image, input_top=None) -> bytes | None:
     did not move, so OCR cannot have anything new to report and its ~300 ms can be
     skipped. The input box is excluded on purpose — the caret blinks there, and it would
     keep a quiet screen looking busy forever. The chat list is excluded for the same
-    reason (unread badges), which is also why the crop starts at CHAT_PANE_X_MIN.
+    reason (unread badges), which is also why the crop starts at chat_pane_x_min.
     """
     import ctypes
 
     try:
         w = Quartz.CGImageGetWidth(image)
         h = Quartz.CGImageGetHeight(image)
+        pane_x = WECHAT.layout.chat_pane_x_min if chat_pane_x_min is None else chat_pane_x_min
+        input_y = WECHAT.layout.input_area_y_min if input_area_y_min is None else input_area_y_min
         # Layout constants here are bottom-origin (Vision's convention); CGImage cropping
         # is top-origin, so the band "input-area top edge .. window top" becomes
-        # y=0 .. (1 - INPUT_AREA_Y_MIN) from the top.
+        # y=0 .. (1 - input_area_y_min) from the top.
         crop = Quartz.CGImageCreateWithImageInRect(
             image,
-            Quartz.CGRectMake(int(CHAT_PANE_X_MIN * w), 0,
-                              int((1.0 - CHAT_PANE_X_MIN) * w),
-                              int((1.0 - INPUT_AREA_Y_MIN if input_top is None else input_top) * h)))
+            Quartz.CGRectMake(int(pane_x * w), 0,
+                              int((1.0 - pane_x) * w),
+                              int((1.0 - input_y if input_top is None else input_top) * h)))
         cs = Quartz.CGColorSpaceCreateDeviceGray()
         buf = ctypes.create_string_buffer(_FP_W * _FP_H)
         ctx = Quartz.CGBitmapContextCreate(
@@ -402,23 +409,25 @@ def _same_frame(a: bytes | None, b: bytes | None) -> bool:
 # ---------------------------------------------------------------------- extraction
 
 
-def _is_noise(b: TextBlock) -> bool:
+def _is_noise(b: TextBlock, layout: LayoutConstants | None = None) -> bool:
+    lay = layout or WECHAT.layout
     if b.conf < MIN_CONF or len(b.text) < MIN_TEXT_LEN:
         return True
     if TIMESTAMP_RE.match(b.text):
         return True
-    return any(re.search(pat, b.text) for pat in UI_NOISE)
+    return any(re.search(pat, b.text) for pat in lay.ui_noise)
 
 
-def extract_chat_title(blocks: list[TextBlock]) -> str:
+def extract_chat_title(blocks: list[TextBlock], layout: LayoutConstants | None = None) -> str:
     """Read the conversation name from the chat pane's header band.
 
     Two rows live up there: the title itself and (when a chat is collapsed) a
     "folded chats" banner. We take the topmost readable band and drop the banner.
     """
+    lay = layout or WECHAT.layout
     cands = [b for b in blocks
-             if b.x >= CHAT_PANE_X_MIN and b.y > TITLE_BAR_Y_MAX
-             and b.conf >= 0.30 and len(b.text) >= 2 and not _is_noise(b)]
+             if b.x >= lay.chat_pane_x_min and b.y > lay.title_bar_y_max
+             and b.conf >= 0.30 and len(b.text) >= 2 and not _is_noise(b, lay)]
     if not cands:
         return ""
     cands.sort(key=lambda b: (-b.y, -len(b.text)))
@@ -434,27 +443,30 @@ def extract_chat_title(blocks: list[TextBlock]) -> str:
     return " ".join(b.text for b in keep).strip()
 
 
-def message_side(x: float, width: float) -> str:
+def message_side(x: float, width: float, layout: LayoutConstants | None = None) -> str:
     """Conservative text geometry: a center alone cannot identify a wide bubble.
 
     Only accept text anchored clearly to one side of the calibrated chat pane.
     Wide text spanning both anchors and isolated central fragments are ambiguous;
     keep them for context/overlay, but never treat them as an incoming reply target.
     """
+    lay = layout or WECHAT.layout
     right = x + width
-    if x >= 0.66 or (x >= 0.50 and right >= 0.80):
+    if x >= lay.me_x_min or (x >= lay.me_x_soft and right >= lay.me_right_min):
         return "me"
-    if x <= 0.50 and right < 0.80:
+    if x <= lay.them_x_max and right < lay.them_right_max:
         return "them"
     return "unknown"
 
 
-def extract_messages(blocks: list[TextBlock], max_messages: int = 12, input_top=None) -> list[Message]:
+def extract_messages(blocks: list[TextBlock], max_messages: int = 12, input_top=None,
+                     layout: LayoutConstants | None = None) -> list[Message]:
     """Turn raw OCR blocks into an ordered list of chat messages (bottom = newest)."""
+    lay = layout or WECHAT.layout
     chat = [b for b in blocks
-            if b.x >= CHAT_PANE_X_MIN
-            and (INPUT_AREA_Y_MIN if input_top is None else 1.0 - input_top) < b.y < TITLE_BAR_Y_MAX
-            and not _is_noise(b)]
+            if b.x >= lay.chat_pane_x_min
+            and (lay.input_area_y_min if input_top is None else 1.0 - input_top) < b.y < lay.title_bar_y_max
+            and not _is_noise(b, lay)]
     if not chat:
         return []
 
@@ -493,7 +505,7 @@ def extract_messages(blocks: list[TextBlock], max_messages: int = 12, input_top=
     headers = set()
     for i, b in enumerate(per_line[:-1]):
         nxt = per_line[i + 1]
-        if (message_side(b.x, b.w) == message_side(nxt.x, nxt.w) == "them"
+        if (message_side(b.x, b.w, lay) == message_side(nxt.x, nxt.w, lay) == "them"
                 and len(b.text) <= 32 and b.h <= nxt.h * .88
                 and abs(b.x - nxt.x) < .03
                 and b.h <= nxt.y - b.y <= max(.16, b.h * 4)):
@@ -504,7 +516,7 @@ def extract_messages(blocks: list[TextBlock], max_messages: int = 12, input_top=
         if i in headers:
             pending_sender = b.text.strip().rstrip("：:")
             continue
-        side = message_side(b.x, b.w)
+        side = message_side(b.x, b.w, lay)
         # fold against the LAST folded line, not the message's first: comparing against
         # the first line made every line from the third on measure ≥2 line-pitches away,
         # so any 3+ line message was split into ≤2-line chunks — the judge then only ever
@@ -525,7 +537,7 @@ def extract_messages(blocks: list[TextBlock], max_messages: int = 12, input_top=
             right = max(m.x + m.w, b.x_right)
             m.x = min(m.x, b.x)
             m.w = right - m.x
-            m.side = message_side(m.x, m.w)
+            m.side = message_side(m.x, m.w, lay)
             m.h = bottom - m.y
             m.last_y = b.y
         else:
@@ -552,7 +564,8 @@ def looks_like_sender_name(msg: Message, following: Message | None) -> bool:
 
 
 def read_conversation(max_messages: int = 12, previous_wid: int | None = None,
-                      prev_fingerprint: bytes | None = None, prev_layout=None) -> dict:
+                      prev_fingerprint: bytes | None = None, prev_layout=None,
+                      profile: AppProfile | None = None) -> dict:
     """One-shot read: find window -> capture -> OCR -> messages.
 
     Pass the previous call's "fingerprint" and an unchanged chat pane short-circuits
@@ -561,11 +574,14 @@ def read_conversation(max_messages: int = 12, previous_wid: int | None = None,
     coordinates. The layout key must also match: resizing the window or input panel
     always forces fresh extraction. Both capture paths use the same image for the
     input boundary, fingerprint and OCR; an unresolved boundary yields no messages.
+    Default ``profile`` is WECHAT for CLI compatibility.
     """
+    profile = profile or WECHAT
+    lay = profile.layout
     t0 = time.perf_counter()
-    win = find_wechat_window(previous_wid)
+    win = find_target_window(profile, previous_wid)
     if win is None:
-        return {"ok": False, "error": "WeChat main window not found", "messages": []}
+        return {"ok": False, "error": f"{profile.display_name} main window not found", "messages": []}
 
     # In-process capture + OCR off the CGImage is the fast path (~250 ms for the pair).
     # The subprocess + PNG route stays as the fallback: it is ~150 ms slower, but it is the
@@ -604,23 +620,29 @@ def read_conversation(max_messages: int = 12, previous_wid: int | None = None,
     layout = (win.wid, win.w, win.h, input_top)
     visual_rect = ((win.x + outline[0]*win.w, win.y + outline[1]*win.h,
                     outline[2]*win.w, outline[3]*win.h) if outline else None)
-    fingerprint = _fingerprint(image, input_top) if image is not None and outline else None
+    fingerprint = (_fingerprint(image, input_top, chat_pane_x_min=lay.chat_pane_x_min,
+                                input_area_y_min=lay.input_area_y_min)
+                   if image is not None and outline else None)
     if layout == prev_layout and _same_frame(fingerprint, prev_fingerprint):
         total = (time.perf_counter() - t0) * 1000
         return {"ok": True, "unchanged": True, "messages": [], "fingerprint": fingerprint,
                 "chat_title": "", "window": window, "n_blocks": 0,
                 "layout": layout, "input_rect": visual_rect,
+                "profile_id": profile.id,
                 "timing_ms": {"capture": total, "ocr": 0.0, "total": total,
                               "capture_path": capture_path}}
 
     t_cap = time.perf_counter()
     if image is None:
         return {"ok": False, "error": "capture failed", "messages": []}
-    blocks = ocr_image(image, input_top=input_top)
+    blocks = ocr_image(image, input_top=input_top,
+                       chat_pane_x_min=lay.chat_pane_x_min,
+                       input_area_y_min=lay.input_area_y_min)
     t_ocr = time.perf_counter()
 
-    chat_title = extract_chat_title(blocks)
-    msgs = (extract_messages(blocks, max_messages=max_messages, input_top=input_top)
+    chat_title = extract_chat_title(blocks, layout=lay)
+    msgs = (extract_messages(blocks, max_messages=max_messages, input_top=input_top,
+                             layout=lay)
             if outline else [])
     return {
         "ok": True,
@@ -631,6 +653,7 @@ def read_conversation(max_messages: int = 12, previous_wid: int | None = None,
         "chat_title": chat_title,
         "window": window,
         "messages": msgs,
+        "profile_id": profile.id,
         "timing_ms": {"capture": (t_cap - t0) * 1000, "ocr": (t_ocr - t_cap) * 1000,
                       "total": (t_ocr - t0) * 1000, "capture_path": capture_path},
         "n_blocks": len(blocks),

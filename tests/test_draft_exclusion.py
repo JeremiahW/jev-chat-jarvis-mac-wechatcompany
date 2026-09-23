@@ -50,7 +50,7 @@ class DraftExclusionTests(unittest.TestCase):
 
     def test_missing_boundary_returns_no_messages(self):
         win=p.WindowInfo(wid=1,pid=1,title='微信',x=0,y=0,w=800,h=600)
-        with patch.object(p,'find_wechat_window',return_value=win), \
+        with patch.object(p,'find_target_window',return_value=win), \
              patch.object(p,'capture_image',return_value=self.canvas()), \
              patch('input_region.input_outline',return_value=None), \
              patch('fill.locate_input',return_value={'rect':None}), \
@@ -58,17 +58,20 @@ class DraftExclusionTests(unittest.TestCase):
             result=p.read_conversation()
         self.assertTrue(result['input_unresolved'])
         self.assertEqual(result['messages'], [])
+        self.assertEqual(result['profile_id'], 'wechat')
 
     def test_layout_change_forces_new_ocr_even_with_same_fingerprint(self):
         win=p.WindowInfo(wid=1,pid=1,title='微信',x=0,y=0,w=800,h=600)
-        with patch.object(p,'find_wechat_window',return_value=win), \
+        with patch.object(p,'find_target_window',return_value=win), \
              patch.object(p,'capture_image',return_value=self.canvas()), \
              patch('input_region.input_outline',return_value=(.32,.6,.65,.39)), \
              patch.object(p,'_fingerprint',return_value=b'x'*100), \
              patch.object(p,'ocr_image',return_value=[block('消息', .5)]) as ocr:
             result=p.read_conversation(prev_fingerprint=b'x'*100,prev_layout=(1,800,600,.75))
             self.assertFalse(result['unchanged'])
+            self.assertEqual(result['profile_id'], 'wechat')
             ocr.assert_called_once()
             result=p.read_conversation(prev_fingerprint=b'x'*100,prev_layout=(1,800,600,.6))
             self.assertTrue(result['unchanged'])
+            self.assertEqual(result['profile_id'], 'wechat')
             self.assertEqual(ocr.call_count,1)
